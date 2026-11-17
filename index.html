@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reprodutor do YouTube</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 32px 16px;
+      display: flex; justify-content: center; align-items: flex-start;
+      background: #f3f4f6; color: #171717;
+      font-family: Arial, sans-serif;
+    }
+    main {
+      width: min(760px, 100%); padding: 24px;
+      background: white; border-radius: 14px;
+      box-shadow: 0 8px 28px #00000012;
+    }
+    h1 { margin: 0 0 18px; font-size: 22px; }
+    .controls { display: flex; gap: 10px; }
+    input {
+      flex: 1; min-width: 0; padding: 13px;
+      border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px;
+    }
+    button {
+      border: 0; border-radius: 8px; padding: 0 22px;
+      background: #dc2626; color: white; font-weight: bold;
+      cursor: pointer; font-size: 14px;
+    }
+    button:hover { background: #b91c1c; }
+    button:disabled { opacity: .65; cursor: not-allowed; }
+    #status { min-height: 20px; margin: 12px 0; color: #b91c1c; font-size: 14px; }
+    #player { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    .video-item { min-width: 0; padding: 8px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; }
+    .video-label { margin: 0 0 8px; color: #374151; font-size: 13px; font-weight: bold; }
+    .video-thumb { display: block; position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border: 0; border-radius: 7px; padding: 0; background: #111; cursor: pointer; }
+    .video-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .video-thumb::after { content: '▶'; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: grid; place-items: center; width: 48px; height: 34px; border-radius: 9px; color: white; background: #dc2626; font-size: 19px; }
+    .video-item iframe { display: block; width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 7px; }
+    #showAll, #stopAll { display: block; width: 100%; margin: 18px auto 10px; padding: 15px 22px; background: #dc2626; color: #fff; border: 0; border-radius: 8px; font-weight: bold; cursor: pointer; }
+    #showAll:hover, #stopAll:hover { background: #b91c1c; }
+    #stopAll { background: #374151; margin-top: 8px; }
+    #stopAll:hover { background: #1f2937; }
+    #loadMore { display: block; margin: 20px auto 0; padding: 13px 22px; }
+    #progressArea { margin-top: 18px; padding: 14px; border: 1px solid #e5e7eb; border-radius: 10px; }
+    #progressText { margin: 0 0 10px; font-size: 14px; color: #374151; }
+    #progressBar { width: 100%; height: 14px; accent-color: #dc2626; }
+    #simulationNote { margin: 10px 0 0; color: #6b7280; font-size: 12px; line-height: 1.5; }
+    #cancelTest { margin-top: 12px; padding: 11px 18px; background: #374151; }
+    #cancelTest:hover { background: #1f2937; }
+    @media (max-width: 520px) {
+      .controls { flex-direction: column; }
+      button { padding: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Reprodutor do YouTube</h1>
+    <form class="controls" id="form">
+      <input id="videoUrl" type="url" placeholder="Cole o link do vídeo do YouTube" required>
+      <button id="startButton" type="submit">INICIAR</button>
+    </form>
+    <p id="status" role="status"></p>
+    <div class="player" id="player" hidden></div>
+    <section id="progressArea" hidden aria-live="polite">
+      <p id="progressText">Solicitações simuladas: 0 de 10.000 (0%)</p>
+      <progress id="progressBar" value="0" max="10000" style="width:100%;height:14px"></progress>
+      <p id="simulationNote">Este é um contador de simulação local. Nenhuma reprodução, visualização ou solicitação é enviada ao YouTube, e o número não altera as métricas do vídeo.</p>
+      <button id="cancelTest" type="button" hidden>INTERROMPER TESTE</button>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('form');
+    const input = document.getElementById('videoUrl');
+    const status = document.getElementById('status');
+    const player = document.getElementById('player');
+    const startButton = document.getElementById('startButton');
+    const progressArea = document.getElementById('progressArea');
+    const progressText = document.getElementById('progressText');
+    const progressBar = document.getElementById('progressBar');
+    const cancelButton = document.getElementById('cancelTest');
+
+    const TOTAL_REQUESTS = 10000;
+    const UPDATE_INTERVAL_MS = 100;
+    const REQUESTS_PER_STEP = 100;
+    let currentVideoId = null;
+    let simulatedCount = 0;
+    let simulationTimer = null;
+
+    function getVideoId(value) {
+      try {
+        const url = new URL(value.trim());
+        if (url.hostname === 'youtu.be' || url.hostname === 'www.youtu.be') {
+          return url.pathname.split('/').filter(Boolean)[0] || null;
+        }
+        if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(url.hostname)) {
+          if (url.pathname === '/watch') return url.searchParams.get('v');
+          const parts = url.pathname.split('/').filter(Boolean);
+          if (['embed', 'shorts', 'live'].includes(parts[0])) return parts[1] || null;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function updateProgress() {
+      const percent = Math.floor((simulatedCount / TOTAL_REQUESTS) * 100);
+      progressBar.value = simulatedCount;
+      progressText.textContent = 'Solicitações simuladas: ' +
+        simulatedCount.toLocaleString('pt-BR') + ' de 10.000 (' + percent + '%)';
+    }
+
+    function stopSimulation(completed) {
+      if (simulationTimer !== null) {
+        clearInterval(simulationTimer);
+        simulationTimer = null;
+      }
+      startButton.disabled = false;
+      cancelButton.hidden = true;
+      if (completed) {
+        status.textContent = 'Teste de simulação concluído: 10.000 etapas simuladas.';
+      } else {
+        status.textContent = 'Teste de simulação interrompido em ' +
+          simulatedCount.toLocaleString('pt-BR') + ' de 10.000 etapas.';
+      }
+    }
+
+    function startSimulation() {
+      if (simulationTimer !== null) clearInterval(simulationTimer);
+      simulatedCount = 0;
+      updateProgress();
+      progressArea.hidden = false;
+      cancelButton.hidden = false;
+      startButton.disabled = true;
+      status.textContent = 'Executando teste de simulação local...';
+
+      simulationTimer = setInterval(() => {
+        simulatedCount = Math.min(simulatedCount + REQUESTS_PER_STEP, TOTAL_REQUESTS);
+        updateProgress();
+        if (simulatedCount >= TOTAL_REQUESTS) stopSimulation(true);
+      }, UPDATE_INTERVAL_MS);
+    }
+
+    function showVideoPreview(videoId) {
+      player.replaceChildren();
+      const item = document.createElement('section');
+      item.className = 'video-item';
+
+      const label = document.createElement('p');
+      label.className = 'video-label';
+      label.textContent = 'Vídeo selecionado';
+
+      const link = document.createElement('a');
+      link.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId);
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.style.display = 'block';
+
+      const image = document.createElement('img');
+      image.src = 'https://i.ytimg.com/vi/' + encodeURIComponent(videoId) + '/hqdefault.jpg';
+      image.alt = 'Miniatura do vídeo selecionado no YouTube';
+      image.loading = 'lazy';
+      image.style.cssText = 'display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:7px';
+
+      link.appendChild(image);
+      item.append(label, link);
+      player.appendChild(item);
+      player.hidden = false;
+    }
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const id = getVideoId(input.value);
+      if (!id || !/^[a-zA-Z0-9_-]{11}$/.test(id)) {
+        if (simulationTimer !== null) clearInterval(simulationTimer);
+        simulationTimer = null;
+        startButton.disabled = false;
+        progressArea.hidden = true;
+        player.hidden = true;
+        player.replaceChildren();
+        status.textContent = 'Link inválido. Cole um link válido de vídeo do YouTube.';
+        return;
+      }
+
+      currentVideoId = id;
+      showVideoPreview(currentVideoId);
+      startSimulation();
+    });
+
+    cancelButton.addEventListener('click', () => stopSimulation(false));
+  </script>
+</body>
+</html>
